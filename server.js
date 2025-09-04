@@ -72,10 +72,34 @@ app.post("/compile", async (req, res) => {
 
     // Compile LaTeX
     console.log(`Compiling LaTeX for job ${jobId}...`);
-    const { stdout, stderr } = await execAsync(
-      `cd ${tempDir} && pdflatex -interaction=nonstopmode -halt-on-error document.tex`,
-      { timeout: 30000 }
-    );
+    let stdout, stderr;
+    try {
+      const result = await execAsync(
+        `cd ${tempDir} && pdflatex -interaction=nonstopmode -halt-on-error document.tex`,
+        { timeout: 30000 }
+      );
+      stdout = result.stdout;
+      stderr = result.stderr;
+    } catch (compileError) {
+      // Read log file for detailed error information
+      const logFile = path.join(tempDir, "document.log");
+      let logContent = "";
+      try {
+        logContent = await fs.readFile(logFile, "utf-8");
+        // Extract error lines from log
+        const errorLines = logContent.split('\n').filter(line => 
+          line.includes('Error') || line.includes('!') || line.includes('undefined')
+        ).slice(0, 10).join('\n');
+        
+        console.error(`LaTeX compilation error for job ${jobId}:`, errorLines || compileError.message);
+      } catch (logReadError) {
+        console.error(`Could not read log file for job ${jobId}:`, logReadError.message);
+      }
+      
+      throw new Error(
+        `LaTeX compilation failed: ${compileError.message}\n${logContent ? 'Log excerpt: ' + logContent.substring(logContent.lastIndexOf('!'), Math.min(logContent.lastIndexOf('!') + 500, logContent.length)) : ''}`
+      );
+    }
 
     // Check if PDF is generated
     const pdfFile = path.join(tempDir, "document.pdf");
@@ -110,6 +134,18 @@ app.post("/compile", async (req, res) => {
     res.send(pdfBuffer);
   } catch (error) {
     console.error(`Compilation failed for job ${jobId}:`, error.message);
+    
+    // Try to provide more helpful error information
+    let additionalInfo = "";
+    if (error.message.includes("pdflatex")) {
+      additionalInfo = "Ensure pdflatex is installed on the server.";
+    } else if (error.message.includes("undefined control sequence") || error.message.includes("Undefined control")) {
+      additionalInfo = "LaTeX syntax error: undefined command or package not included.";
+    } else if (error.message.includes("Missing") || error.message.includes("missing")) {
+      additionalInfo = "LaTeX syntax error: missing bracket, brace, or $ delimiter.";
+    } else if (error.message.includes("File") && error.message.includes("not found")) {
+      additionalInfo = "Missing LaTeX package or file. Ensure all required packages are included.";
+    }
 
     // Clean up temporary files
     await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
@@ -117,6 +153,7 @@ app.post("/compile", async (req, res) => {
     res.status(500).json({
       error: "LaTeX compilation failed",
       details: error.message,
+      suggestion: additionalInfo,
       jobId: jobId,
     });
   }
