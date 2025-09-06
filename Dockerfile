@@ -20,6 +20,7 @@ RUN npm ci --only=production
 
 # Copy server code
 COPY server.js ./
+COPY llmService.js ./
 
 # Expose port (Railway will automatically assign)
 EXPOSE 3000
