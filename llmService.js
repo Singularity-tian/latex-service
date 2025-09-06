@@ -1,5 +1,4 @@
 const Anthropic = require("@anthropic-ai/sdk");
-require("dotenv").config({ path: ".env.local" });
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
