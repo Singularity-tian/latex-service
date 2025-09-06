@@ -83,22 +83,68 @@ app.post("/compile", async (req, res) => {
     } catch (compileError) {
       // Read log file for detailed error information
       const logFile = path.join(tempDir, "document.log");
-      let logContent = "";
+      let errorDetails = "";
+      let userFriendlyError = "";
+      
       try {
-        logContent = await fs.readFile(logFile, "utf-8");
-        // Extract error lines from log
-        const errorLines = logContent.split('\n').filter(line => 
-          line.includes('Error') || line.includes('!') || line.includes('undefined')
-        ).slice(0, 10).join('\n');
+        const logContent = await fs.readFile(logFile, "utf-8");
+        const lines = logContent.split('\n');
         
-        console.error(`LaTeX compilation error for job ${jobId}:`, errorLines || compileError.message);
+        // Find LaTeX error messages - they typically start with '!'
+        let errorFound = false;
+        let errorLines = [];
+        
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          
+          // LaTeX errors start with '!'
+          if (line.startsWith('!')) {
+            errorFound = true;
+            // Get the error line and the next few lines for context
+            for (let j = i; j < Math.min(i + 5, lines.length); j++) {
+              errorLines.push(lines[j]);
+            }
+            
+            // Extract user-friendly error message
+            if (line.includes('Undefined control sequence')) {
+              userFriendlyError = "Undefined LaTeX command. Check for typos in commands or missing packages.";
+            } else if (line.includes('File') && line.includes('not found')) {
+              const match = line.match(/File `(.+?)'/);
+              userFriendlyError = `Missing file or package: ${match ? match[1] : 'unknown'}. Add \\usepackage{} for missing packages.`;
+            } else if (line.includes('Missing')) {
+              userFriendlyError = "Missing delimiter or bracket. Check for unclosed braces, brackets, or math mode.";
+            } else if (line.includes('Emergency stop')) {
+              userFriendlyError = "Critical LaTeX error. Check document structure and syntax.";
+            } else {
+              userFriendlyError = line.substring(1).trim(); // Remove '!' and trim
+            }
+            break;
+          }
+        }
+        
+        if (!errorFound) {
+          // No explicit error found, check stdout/stderr
+          if (compileError.message.includes('pdflatex: command not found')) {
+            errorDetails = "pdflatex is not installed on the server";
+            userFriendlyError = "LaTeX is not properly installed on the server.";
+          } else {
+            // Get last meaningful lines from log
+            const meaningfulLines = lines.filter(l => l.trim() && !l.includes('*File List*'));
+            errorDetails = meaningfulLines.slice(-10).join('\n');
+            userFriendlyError = "Compilation failed. Check LaTeX syntax.";
+          }
+        } else {
+          errorDetails = errorLines.join('\n');
+        }
+        
+        console.error(`LaTeX compilation error for job ${jobId}:`, errorDetails);
       } catch (logReadError) {
         console.error(`Could not read log file for job ${jobId}:`, logReadError.message);
+        errorDetails = compileError.stderr || compileError.message;
+        userFriendlyError = "Failed to compile LaTeX document.";
       }
       
-      throw new Error(
-        `LaTeX compilation failed: ${compileError.message}\n${logContent ? 'Log excerpt: ' + logContent.substring(logContent.lastIndexOf('!'), Math.min(logContent.lastIndexOf('!') + 500, logContent.length)) : ''}`
-      );
+      throw new Error(userFriendlyError + (errorDetails ? `\n\nDetails: ${errorDetails}` : ''));
     }
 
     // Check if PDF is generated
@@ -151,9 +197,9 @@ app.post("/compile", async (req, res) => {
     await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
 
     res.status(500).json({
-      error: "LaTeX compilation failed",
-      details: error.message,
-      suggestion: additionalInfo,
+      error: error.message.split('\n')[0], // First line is user-friendly error
+      details: error.message.includes('Details:') ? error.message.split('Details:')[1].trim() : error.message,
+      suggestion: additionalInfo || undefined,
       jobId: jobId,
     });
   }
